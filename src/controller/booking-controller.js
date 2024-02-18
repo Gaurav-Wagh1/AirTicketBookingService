@@ -29,7 +29,7 @@ const update = async (req, res) => {
             data: response,
             success: true,
             error: {},
-            message: "Successfully updated the flight !"
+            message: "Successfully updated the booking !"
         });
     } catch (error) {
         return res.status(500).json({
@@ -48,7 +48,7 @@ const get = async (req, res) => {
             data: response,
             success: true,
             error: {},
-            message: "Successfully fetched the flight"
+            message: "Successfully fetched the booking"
         });
     } catch (error) {
         return res.status(500).json({

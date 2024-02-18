@@ -1,13 +1,29 @@
-const { BookingRepository } = require('../repository/index');
-const { FLIGHT_SERVICE_PATH } = require('../config/server-config');
-const { ServiceError } = require('../utils/errors/index');
 const axios = require('axios');
 const { StatusCodes } = require('http-status-codes');
 
+const { generatePayload } = require('../utils/helper');
+const { ServiceError } = require('../utils/errors/index');
+const { BookingRepository } = require('../repository/index');
+const { BOOKING_BINDING_KEY } = require('../config/server-config');
+const { createChannel, publishMessage } = require('../utils/message-queue');
+const { FLIGHT_SERVICE_PATH, AUTH_SERVICE_PATH } = require('../config/server-config');
+
+
+// const channel = await createChannel();
 class BookingService {
     constructor() {
+        this.channel;
         this.bookingRepository = new BookingRepository();
     }
+
+    async #sendMessageToQueue(serviceName, emailId, dateTime = "NULL") {
+        if (!this.channel) {
+            this.channel = await createChannel();
+        }
+        const payload = generatePayload(serviceName, emailId, dateTime);
+        publishMessage(this.channel, BOOKING_BINDING_KEY, JSON.stringify(payload));
+    }
+
 
     // payment gateway can be implemented before sending the success response;
     async createBooking(data) {
@@ -15,10 +31,10 @@ class BookingService {
             const { flightId, noOfSeats } = data;
 
             // getting the desired flight from the flightSearch microservice;
-            const flightUrl = `${FLIGHT_SERVICE_PATH}/api/v1/flights/${flightId}`;
+            const flightUrl = `${FLIGHT_SERVICE_PATH}/flightsearch/api/v1/flights/${flightId}`;
             const flight = await axios.get(flightUrl);
 
-            const { price, totalSeats } = flight.data.data;
+            const { price, totalSeats, departureTime } = flight.data.data;
 
             // if requested seats are more than the total available seats of the flight;
             if (noOfSeats > totalSeats) {
@@ -30,7 +46,7 @@ class BookingService {
             }
 
             // updating the seats of the flights using flightSearch microservice;
-            const flightUpdateURL = `${FLIGHT_SERVICE_PATH}/api/v1/flights/${flightId}`;
+            const flightUpdateURL = `${FLIGHT_SERVICE_PATH}/flightsearch/api/v1/flights/${flightId}`;
             await axios.patch(flightUpdateURL, { totalSeats: totalSeats - noOfSeats });
 
             // calculating the total cost;
@@ -39,6 +55,21 @@ class BookingService {
             // updating the booking table with all the necessary information / data;
             const bookingPayload = { ...data, totalCost, status: 'Booked' };
             const booking = await this.bookingRepository.create(bookingPayload);
+
+            // getting the email-id of the consumer for sending notifications and reminders;
+            const userUrl = `${AUTH_SERVICE_PATH}/authservice/api/v1/users/${data.userId}`;
+            const user = await axios.get(userUrl);
+            const userData = user.data.data;
+
+            // for immediately sending the confirmation mail;
+            this.#sendMessageToQueue('SEND_EMAIL', userData.email);
+
+            // for creating a ticket, due to which cron will send this mail 48 hours before the flight departure time;
+            // for that, here calculating the dateTime to send mail, i.e. dateTime = departureTime - 48 hours;
+            const dateTime = new Date(departureTime);
+            dateTime.setHours(dateTime.getHours() - 48);
+
+            this.#sendMessageToQueue('CREATE_TICKET', userData.email, dateTime);
 
             return booking;
 
@@ -67,7 +98,7 @@ class BookingService {
 
                 // getting the existing flight id from booking object;
                 const existingFlightId = booking.flightId;
-                const existingFlightURL = `${FLIGHT_SERVICE_PATH}/api/v1/flights/${existingFlightId}`;
+                const existingFlightURL = `${FLIGHT_SERVICE_PATH}/flightsearch/api/v1/flights/${existingFlightId}`;
 
                 // removing user's seats from the old/existing flight;
                 const existingFlight = await axios.get(existingFlightURL);
@@ -86,7 +117,7 @@ class BookingService {
                 }
 
                 const newFlightId = data.flightId;
-                const newFlightURL = `${FLIGHT_SERVICE_PATH}/api/v1/flights/${newFlightId}`;
+                const newFlightURL = `${FLIGHT_SERVICE_PATH}/flightsearch/api/v1/flights/${newFlightId}`;
                 const newFlight = await axios.get(newFlightURL);
 
 
@@ -129,7 +160,7 @@ class BookingService {
 
                 // updating the seats in existing flight;
                 const existingFlightId = booking.flightId;
-                const existingFlightUrl = `${FLIGHT_SERVICE_PATH}/api/v1/flights/${existingFlightId}`;
+                const existingFlightUrl = `${FLIGHT_SERVICE_PATH}/flightsearch/api/v1/flights/${existingFlightId}`;
 
                 const flight = await axios.get(existingFlightUrl);
                 const flightData = flight.data.data;
@@ -188,6 +219,7 @@ class BookingService {
             throw new ServiceError();
         }
     }
+
 
     async getBooking(bookingId) {
         try {

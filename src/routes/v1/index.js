@@ -1,5 +1,6 @@
 const express = require('express');
 const { BookingController } = require('../../controller/index');
+
 const {
     validateGenerateBooking,
     validateUpdateBooking
